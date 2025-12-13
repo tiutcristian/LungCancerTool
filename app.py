@@ -11,13 +11,20 @@ class App(tk.Tk):
         self.title("Lung Cancer Viewer - MVP")
         self.geometry("1100x650")
 
+        # App state
         self.current_user_role = None
-        self.cases = get_initial_cases()   # list[Case]
+        self.cases = get_initial_cases()
         self.current_case = None
 
+        # Main container that hosts all pages
         container = tk.Frame(self)
         container.pack(fill="both", expand=True)
 
+        # Make the single grid cell stretch to full window
+        container.grid_rowconfigure(0, weight=1)
+        container.grid_columnconfigure(0, weight=1)
+
+        # Pages
         self.frames = {}
         for F in (LoginFrame, CasesFrame, ViewerFrame):
             frame = F(parent=container, controller=self)
@@ -25,6 +32,18 @@ class App(tk.Tk):
             frame.grid(row=0, column=0, sticky="nsew")
 
         self.show_frame("LoginFrame")
+
+        # Start maximized so login fills the screen
+        self.after(50, self._maximize)
+
+    def _maximize(self):
+        try:
+            self.state("zoomed")                 # Windows
+        except Exception:
+            try:
+                self.attributes("-zoomed", True)  # some Linux WMs
+            except Exception:
+                pass
 
     def show_frame(self, name: str):
         frame = self.frames[name]
