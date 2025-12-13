@@ -50,9 +50,8 @@ def _fake_heatmap(size):
 def mock_run_ai(case: Case) -> Dict[str, Any]:
     """Returnează biomarkeri + explicație + heatmap RGBA pentru blend."""
     biomarkers = [
-        {"name": "Malignancy probability", "value": random.uniform(0.3, 0.95)},
-        {"name": "Lymph node involvement", "value": random.uniform(0.1, 0.8)},
-        {"name": "Metastasis risk", "value": random.uniform(0.05, 0.7)},
+        {"name": "TTF1", "value": random.uniform(0.3, 0.95)},
+        {"name": "CK7", "value": random.uniform(0.1, 0.8)},
     ]
     explanation = (
         f"(Mock) Pentru cazul {case.case_id}, probabilitatea mai mare de malignitate "
