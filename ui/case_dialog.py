@@ -164,17 +164,6 @@ class CaseDialog(tk.Toplevel):
         except Exception:
             pass
 
-    def _add_imgs(self):
-        paths = filedialog.askopenfilenames(
-            parent=self, title="Select images",
-            initialdir=_default_initialdir(),
-            filetypes=[("Images", "*.png;*.jpg;*.jpeg"), ("All files", "*.*")]
-        )
-        for p in paths:
-            if p and p not in self.image_paths:
-                self.image_paths.append(p)
-                self.lb.insert("end", os.path.basename(p))
-
     def _remove_selected(self):
         sel = list(self.lb.curselection())
         if not sel:
@@ -206,3 +195,50 @@ class CaseDialog(tk.Toplevel):
 
         self.result = Case(cid, name, d, self.status_var.get(), self.image_paths)
         self.destroy()
+
+    def _is_dicom(self, path: str) -> bool:
+        """Fast-ish DICOM check; returns True if likely a DICOM file."""
+        try:
+            with open(path, "rb") as f:
+                f.seek(128)
+                if f.read(4) == b"DICM":
+                    return True
+        except Exception:
+            pass
+        try:
+            from pydicom import dcmread  # lazy import
+            dcmread(path, stop_before_pixels=True, force=True)
+            return True
+        except Exception:
+            return False
+
+    def _pretty_label(self, path: str) -> str:
+        """Format file name for display, appending '[DICOM]' if applicable."""
+        name = os.path.basename(path)
+        if self._is_dicom(path):
+            return f"{name}  [DICOM]"
+        return name
+
+    def _add_imgs(self):
+        """Add images or DICOM files to the series."""
+        paths = filedialog.askopenfilenames(
+            parent=self, title="Select images or DICOM",
+            initialdir=_default_initialdir(),
+            filetypes=[
+                ("Images & DICOM", "*.png;*.jpg;*.jpeg;*.dcm;*.dicom"),
+                ("All files", "*.*"),
+            ]
+        )
+        if not paths:
+            return
+
+        added = 0
+        for p in paths:
+            if not p or p in self.image_paths:
+                continue
+            self.image_paths.append(p)
+            self.lb.insert("end", self._pretty_label(p))
+            added += 1
+
+        if added:
+            self.after(10, lambda: messagebox.showinfo("Import", f"Added {added} file(s)."))
