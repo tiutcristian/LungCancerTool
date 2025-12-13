@@ -2,10 +2,29 @@ import os
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from datetime import date
-from models import Case
-from backend_mock import ASSETS_DIR  # open file picker in /assets by default
+from model.models import Case
 
 STATUSES = ["Unsegmented", "Segmented", "Reported"]
+
+
+
+def _default_initialdir() -> str:
+    """Choose a sensible default folder for picking images."""
+    here = os.path.dirname(os.path.abspath(__file__))
+
+    # Common layouts:
+    #  - project_root/assets
+    #  - ui/assets (if you keep assets next to UI code)
+    candidates = [
+        os.path.join(here, "assets"),
+        os.path.abspath(os.path.join(here, "..", "assets")),
+        os.getcwd(),
+    ]
+    for p in candidates:
+        if os.path.isdir(p):
+            return p
+    return os.getcwd()
+
 
 
 class CaseDialog(tk.Toplevel):
@@ -83,7 +102,7 @@ class CaseDialog(tk.Toplevel):
 
         # Status
         ttk.Label(form, text="Status", style="DialogLabel.TLabel").grid(row=6, column=0, sticky="w", pady=(12, 2))
-        self.status_var = tk.StringVar(value=(case.status if case else STATUSES[0]))
+        self.status_var = tk.StringVar(value=(case.segmentation_status if case else STATUSES[0]))
         ttk.Combobox(form, textvariable=self.status_var, values=STATUSES,
                      state="readonly").grid(row=7, column=0, sticky="ew")
 
@@ -93,14 +112,14 @@ class CaseDialog(tk.Toplevel):
         list_row.grid(row=9, column=0, sticky="nsew")
         form.grid_rowconfigure(9, weight=1)
 
-        self.series_paths = list(case.series_paths) if case else []
+        self.image_paths = list(case.ct_images) if case else []
 
         # Use tk.Listbox but style colors to match
         self.lb = tk.Listbox(list_row, height=6, activestyle="none",
                              bg=FIELD_BG, fg=FG, highlightthickness=0,
                              selectbackground="#1f2937", selectforeground=FG)
         self.lb.pack(side="left", fill="both", expand=True)
-        for p in self.series_paths:
+        for p in self.image_paths:
             self.lb.insert("end", os.path.basename(p))
 
         sb = ttk.Scrollbar(list_row, orient="vertical", command=self.lb.yview)
@@ -148,12 +167,12 @@ class CaseDialog(tk.Toplevel):
     def _add_imgs(self):
         paths = filedialog.askopenfilenames(
             parent=self, title="Select images",
-            initialdir=ASSETS_DIR,
+            initialdir=_default_initialdir(),
             filetypes=[("Images", "*.png;*.jpg;*.jpeg"), ("All files", "*.*")]
         )
         for p in paths:
-            if p and p not in self.series_paths:
-                self.series_paths.append(p)
+            if p and p not in self.image_paths:
+                self.image_paths.append(p)
                 self.lb.insert("end", os.path.basename(p))
 
     def _remove_selected(self):
@@ -162,7 +181,7 @@ class CaseDialog(tk.Toplevel):
             return
         for i in reversed(sel):
             self.lb.delete(i)
-            del self.series_paths[i]
+            del self.image_paths[i]
 
     def _cancel(self):
         self.result = None
@@ -185,5 +204,5 @@ class CaseDialog(tk.Toplevel):
             messagebox.showerror("Validation", "Date must be YYYY-MM-DD.")
             return
 
-        self.result = Case(cid, name, d, self.status_var.get(), self.series_paths)
+        self.result = Case(cid, name, d, self.status_var.get(), self.image_paths)
         self.destroy()

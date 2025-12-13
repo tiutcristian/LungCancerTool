@@ -1,10 +1,12 @@
+from __future__ import annotations
+
 import os
 import tkinter as tk
 from tkinter import ttk, messagebox
 from PIL import Image, ImageTk, ImageOps
 
-from backend_mock import mock_run_ai
-from models import Case
+from logic.backend import run_ai
+from model.models import Case
 
 
 class ViewerFrame(tk.Frame):
@@ -171,11 +173,11 @@ class ViewerFrame(tk.Frame):
             w.destroy()
 
         self.series_list.delete(0, "end")
-        for i, p in enumerate(c.series_paths):
+        for i, p in enumerate(c.ct_images):
             name = os.path.basename(p)
             self.series_list.insert("end", f"{i+1}. {name}")
 
-        if c.series_paths:
+        if c.ct_images:
             self.series_list.selection_clear(0, "end")
             self.series_list.selection_set(0)
             self._load_selected_series()
@@ -193,12 +195,12 @@ class ViewerFrame(tk.Frame):
     # ---------- helpers ----------
     def _load_selected_series(self):
         c: Case = self.controller.current_case
-        if not c.series_paths:
+        if not c.ct_images:
             return
         idx = self.series_list.curselection()
         if not idx:
             return
-        img_path = c.series_paths[int(idx[0])]
+        img_path = c.ct_images[int(idx[0])]
         try:
             self._pil_base = Image.open(img_path).convert("RGBA")
         except Exception as e:
@@ -323,7 +325,11 @@ class ViewerFrame(tk.Frame):
     # ---------- actions ----------
     def run_ai(self):
         c: Case = self.controller.current_case
-        result = mock_run_ai(c)
+        try:
+            result = run_ai(c)
+        except Exception as e:
+            messagebox.showerror("AI / DB error", f"Could not load AI result for {c.case_id}:\n{e}")
+            result = {"biomarkers": [], "explanation": "", "heatmap": None}
 
         # biomarkers
         for w in self.biomarker_frame.winfo_children():

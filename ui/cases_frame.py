@@ -1,6 +1,10 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
 from ui.case_dialog import CaseDialog
+from logic.backend import get_initial_cases
+from logic.backend import add_case
+from logic.backend import update_case
+from logic.backend import delete_case
 
 
 class CasesFrame(tk.Frame):
@@ -87,7 +91,8 @@ class CasesFrame(tk.Frame):
         self.search_entry = ttk.Entry(left, textvariable=self.search_var, width=28)
         self.search_entry.pack(side="left", fill="x", expand=True)
         ttk.Button(left, text="Clear", style="Ghost.TButton",
-                   command=lambda: (self.search_var.set(""), self.refresh_table())).pack(side="left", padx=(8, 0))
+                   command=lambda: (self.search_var.set(""),
+        self.refresh_table())).pack(side="left", padx=(8, 0))
 
         right = ttk.Frame(controls, style="Toolbar.TFrame")
         right.pack(side="right")
@@ -102,10 +107,10 @@ class CasesFrame(tk.Frame):
         card = ttk.Frame(root, style="Card.TFrame", padding=12)
         card.pack(fill="both", expand=True, padx=16, pady=12)
 
-        columns = ("id", "patient", "date", "status", "series")
+        columns = ("id", "patient", "date", "status", "images")
         self.tree = ttk.Treeview(card, columns=columns, show="headings", selectmode="browse")
-        headers = {"id": "ID", "patient": "Patient", "date": "Date", "status": "Status", "series": "#Series"}
-        widths = {"id": 120, "patient": 260, "date": 130, "status": 140, "series": 90}
+        headers = {"id": "ID", "patient": "Patient", "date": "Date", "status": "Status", "images": "#Images"}
+        widths = {"id": 120, "patient": 260, "date": 130, "status": 140, "images": 90}
         for col in columns:
             self.tree.heading(col, text=headers[col])
             self.tree.column(col, stretch=True, width=widths[col])
@@ -128,9 +133,20 @@ class CasesFrame(tk.Frame):
         self.bind_all("<Control-n>", lambda e: self.add_case())
         self.bind_all("<Control-e>", lambda e: self.edit_case())
 
+        # Initial populate
+        self.on_show()
     # ---------- lifecycle ----------
     def on_show(self):
         self.role_label.config(text=f"Role: {self.controller.current_user_role}")
+        # Load cases from MongoDB (read-only)
+        if not hasattr(self.controller, "cases") or self.controller.cases is None:
+            self.controller.cases = []
+        if not self.controller.cases:
+            try:
+                self.controller.cases = get_initial_cases()
+            except Exception as e:
+                messagebox.showerror("Database error", f"Could not load cases from MongoDB:\n{e}")
+                self.controller.cases = []
         self.refresh_table()
         self.search_entry.focus_set()
 
@@ -164,7 +180,7 @@ class CasesFrame(tk.Frame):
             tag = "evenrow" if i % 2 == 0 else "oddrow"
             self.tree.insert(
                 "", "end",
-                values=(case.case_id, case.patient_name, case.date, case.status, len(case.series_paths)),
+                values=(case.case_id, case.patient_name, case.date, case.segmentation_status, len(case.ct_images)),
                 tags=(tag,)
             )
 
@@ -175,6 +191,7 @@ class CasesFrame(tk.Frame):
         self.wait_window(dlg)
         if dlg.result:
             self.controller.cases.append(dlg.result)
+            add_case(dlg.result)
             self.refresh_table()
 
     def _get_selected_case(self):
@@ -199,8 +216,9 @@ class CasesFrame(tk.Frame):
             case.case_id = dlg.result.case_id
             case.patient_name = dlg.result.patient_name
             case.date = dlg.result.date
-            case.status = dlg.result.status
-            case.series_paths = dlg.result.series_paths
+            case.segmentation_status = dlg.result.segmentation_status
+            case.ct_images = dlg.result.ct_images
+            update_case(case)
             self.refresh_table()
 
     def delete_case(self):
@@ -210,6 +228,7 @@ class CasesFrame(tk.Frame):
         if messagebox.askyesno("Confirm delete",
                                f"Delete case {case.case_id} - {case.patient_name}?"):
             self.controller.cases.remove(case)
+            delete_case(case.case_id)
             self.refresh_table()
 
     def open_viewer(self):

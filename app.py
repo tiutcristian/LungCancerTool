@@ -2,7 +2,7 @@ import tkinter as tk
 from ui.login_frame import LoginFrame
 from ui.cases_frame import CasesFrame
 from ui.viewer_frame import ViewerFrame
-from backend_mock import get_initial_cases
+from logic.backend import get_initial_cases
 
 
 class App(tk.Tk):
