@@ -54,7 +54,7 @@ class MongoDB:
 
     def insert_case(self, case: Case) -> Optional[str]:
         """
-        Insert a new Case into MongoDB.
+        Insert a new Case into MongoDB, storing images in GridFS.
 
         Args:
             case (Case): the case object to insert
@@ -67,18 +67,29 @@ class MongoDB:
             print(f"[MongoDB] Case with id {case.case_id} already exists, skipping insert.")
             return None
 
+        # Upload images to GridFS and store file_ids
+        file_ids = []
+        for img_path in case.ct_images:
+            if not os.path.exists(img_path):
+                img_path = self._resolve_image_to_local_path(img_path, subdir="ct")
+
+            with open(img_path, "rb") as f:
+                file_id = self.fs.put(f, filename=os.path.basename(img_path))
+                file_ids.append(str(file_id))
+
         doc = {
             "case_id": case.case_id,
             "patient_name": case.patient_name,
             "date": case.date,
             "segmentation_status": case.segmentation_status,
-            "ct_images": case.ct_images,
+            "ct_images": file_ids,  # Store file_ids instead of paths
             "ai_result": {},  # empty at first
         }
 
         result = self.cases.insert_one(doc)
         print(f"[MongoDB] Inserted case {case.case_id} with _id={result.inserted_id}")
         return str(result.inserted_id)
+
 
     def update_case(self, case: Case) -> bool:
         """
@@ -122,7 +133,7 @@ class MongoDB:
                     patient_name=patient_name,
                     date=date,
                     segmentation_status=segmentation_status,
-                    ct_images=ct_local_paths,
+                    ct_images=ct_local_paths,  # Resolve file_ids to local paths
                 )
             )
         return out
@@ -161,18 +172,25 @@ class MongoDB:
     def _resolve_image_to_local_path(self, ref: str, subdir: str) -> str:
         if not ref:
             return ref
-        if not _is_url(ref) and os.path.exists(ref):
+
+        # 1. If it's already a local path, just return it
+        if os.path.exists(ref):
             return ref
-        target_dir = os.path.join(self.cache_dir, subdir)
+
+        target_dir = os.path.join(self.cache_dir, subdir, "assets")
         os.makedirs(target_dir, exist_ok=True)
-        ext = os.path.splitext(ref.split("?")[0])[1] or ".png"
-        local_name = f"{_sha1(ref)}{ext}"
-        local_path = os.path.join(target_dir, local_name)
+
+        # Use ref as filename only if it's an ObjectId
+        filename = f"{ref}.png"
+        local_path = os.path.join(target_dir, filename)
+
         if os.path.exists(local_path):
             return local_path
+
         raw = self._load_bytes(ref)
         with open(local_path, "wb") as f:
             f.write(raw)
+
         return local_path
 
     def _load_image_as_pil(self, ref: str) -> Image.Image:
@@ -204,3 +222,5 @@ class MongoDB:
             return False
         print(f"[MongoDB] Deleted case {case_id}.")
         return True
+
+

@@ -236,9 +236,14 @@ class CaseDialog(tk.Toplevel):
         for p in paths:
             if not p or p in self.image_paths:
                 continue
-            self.image_paths.append(p)
-            self.lb.insert("end", self._pretty_label(p))
-            added += 1
+            try:
+                # Save the image to GridFS and get the file_id
+                file_id = self.master.controller._db.fs.put(open(p, "rb"), filename=os.path.basename(p))
+                self.image_paths.append(str(file_id))  # Store the file_id
+                self.lb.insert("end", self._pretty_label(p))
+                added += 1
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to save image '{p}' to GridFS:\n{e}")
 
         if added:
             self.after(10, lambda: messagebox.showinfo("Import", f"Added {added} file(s)."))

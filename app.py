@@ -3,6 +3,7 @@ from ui.login_frame import LoginFrame
 from ui.cases_frame import CasesFrame
 from ui.viewer_frame import ViewerFrame
 from logic.backend import get_initial_cases
+from logic.mongo_db import MongoDB
 
 
 class App(tk.Tk):
@@ -10,6 +11,7 @@ class App(tk.Tk):
         super().__init__()
         self.title("Lung Cancer Viewer - MVP")
         self.geometry("1100x650")
+        self._db = MongoDB()
 
         # App state
         self.current_user_role = None
@@ -35,6 +37,9 @@ class App(tk.Tk):
 
         # Start maximized so login fills the screen
         self.after(50, self._maximize)
+
+    def get_initial_cases(self):
+        return self._db.list_cases()
 
     def _maximize(self):
         try:
