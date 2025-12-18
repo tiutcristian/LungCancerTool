@@ -7,6 +7,7 @@ from PIL import Image
 from pymongo import MongoClient
 from bson import ObjectId
 import gridfs
+import time
 
 from model.models import Case
 
@@ -56,50 +57,69 @@ class MongoDB:
         """
         Insert a new Case into MongoDB, storing images in GridFS.
 
-        Args:
-            case (Case): the case object to insert
-
-        Returns:
-            str: the inserted document ID (string form), or None if case_id exists
+        - Local files are uploaded to GridFS
+        - Existing GridFS ObjectId refs are preserved
+        - No dependency on permanent local storage
         """
+
+        # 1. Prevent duplicate case_id
         existing = self.cases.find_one({"case_id": case.case_id})
         if existing:
             print(f"[MongoDB] Case with id {case.case_id} already exists, skipping insert.")
             return None
 
-        # Upload images to GridFS and store file_ids
-        file_ids = []
-        for img_path in case.ct_images:
-            if not os.path.exists(img_path):
-                img_path = self._resolve_image_to_local_path(img_path, subdir="ct")
+        file_ids: List[str] = []
 
-            with open(img_path, "rb") as f:
-                file_id = self.fs.put(f, filename=os.path.basename(img_path))
+        # 2. Process images safely
+        for img_ref in case.ct_images:
+            if not img_ref:
+                continue
+
+            # Case A: already a GridFS ObjectId (string)
+            if not os.path.exists(img_ref):
+                file_ids.append(img_ref)
+                continue
+
+            # Case B: local file → upload to GridFS
+            try:
+                with open(img_ref, "rb") as f:
+                    file_id = self.fs.put(
+                        f,
+                        filename=os.path.basename(img_ref)
+                    )
                 file_ids.append(str(file_id))
+            except Exception as e:
+                raise RuntimeError(f"Failed to upload image '{img_ref}' to GridFS: {e}")
 
+        # 3. Insert case document
         doc = {
             "case_id": case.case_id,
             "patient_name": case.patient_name,
             "date": case.date,
             "segmentation_status": case.segmentation_status,
-            "ct_images": file_ids,  # Store file_ids instead of paths
+            "ct_images": file_ids,  # GridFS ObjectId strings
             "ai_result": {},  # empty at first
         }
 
         result = self.cases.insert_one(doc)
         print(f"[MongoDB] Inserted case {case.case_id} with _id={result.inserted_id}")
+
         return str(result.inserted_id)
 
-
     def update_case(self, case: Case) -> bool:
-        """
-        Update an existing Case in MongoDB.
+        doc = self._find_case_doc(case.case_id)
+        existing_refs = set(doc.get("ct_images", []))
 
-        Args:
-            case (Case): the case object to update
-        Returns:
-            bool: True if the case was updated, False if not found
-        """
+        new_refs = []
+
+        for img in case.ct_images:
+            if os.path.exists(img):
+                with open(img, "rb") as f:
+                    fid = self.fs.put(f, filename=os.path.basename(img))
+                    new_refs.append(str(fid))
+            else:
+                new_refs.append(img)  # deja GridFS
+
         result = self.cases.update_one(
             {"case_id": case.case_id},
             {
@@ -107,33 +127,29 @@ class MongoDB:
                     "patient_name": case.patient_name,
                     "date": case.date,
                     "segmentation_status": case.segmentation_status,
-                    "ct_images": case.ct_images,
+                    "ct_images": new_refs,
                 }
             },
         )
-        if result.matched_count == 0:
-            print(f"[MongoDB] Case with id {case.case_id} not found, cannot update.")
-            return False
-        print(f"[MongoDB] Updated case {case.case_id}, modified_count={result.modified_count}")
-        return True
+        return result.matched_count > 0
 
     def list_cases(self) -> List[Case]:
-        out: List[Case] = []
-        for doc in self.cases.find({}, projection=None):
-            case_id = str(doc.get("case_id") or doc.get("_id"))
-            patient_name = doc.get("patient_name", "")
-            date = doc.get("date", "")
-            segmentation_status = doc.get("segmentation_status", "")
+        out = []
+        for doc in self.cases.find({}):
             ct_refs = doc.get("ct_images", []) or []
-            ct_local_paths = [self._resolve_image_to_local_path(ref, subdir="ct") for ref in ct_refs]
+
+            resolved = [
+                self._resolve_image_to_local_path(ref, subdir="ct")
+                for ref in ct_refs
+            ]
 
             out.append(
                 Case(
-                    case_id=case_id,
-                    patient_name=patient_name,
-                    date=date,
-                    segmentation_status=segmentation_status,
-                    ct_images=ct_local_paths,  # Resolve file_ids to local paths
+                    case_id=str(doc.get("case_id")),
+                    patient_name=doc.get("patient_name", ""),
+                    date=doc.get("date", ""),
+                    segmentation_status=doc.get("segmentation_status", ""),
+                    ct_images=resolved,
                 )
             )
         return out
@@ -173,23 +189,26 @@ class MongoDB:
         if not ref:
             return ref
 
-        # 1. If it's already a local path, just return it
         if os.path.exists(ref):
             return ref
 
         target_dir = os.path.join(self.cache_dir, subdir, "assets")
         os.makedirs(target_dir, exist_ok=True)
 
-        # Use ref as filename only if it's an ObjectId
-        filename = f"{ref}.png"
+        try:
+            oid = ObjectId(ref)
+            grid_out = self.fs.get(oid)
+        except Exception as e:
+            raise RuntimeError(f"Invalid GridFS ref: {ref}") from e
+
+        filename = grid_out.filename or f"{ref}"
         local_path = os.path.join(target_dir, filename)
 
         if os.path.exists(local_path):
             return local_path
 
-        raw = self._load_bytes(ref)
         with open(local_path, "wb") as f:
-            f.write(raw)
+            f.write(grid_out.read())
 
         return local_path
 
@@ -216,11 +235,31 @@ class MongoDB:
         return grid_out.read()
 
     def delete_case(self, case_id):
-        result = self.cases.delete_one({"case_id": case_id})
-        if result.deleted_count == 0:
-            print(f"[MongoDB] Case with id {case_id} not found, cannot delete.")
+        doc = self.cases.find_one({"case_id": case_id})
+        if not doc:
             return False
-        print(f"[MongoDB] Deleted case {case_id}.")
+
+        for ref in doc.get("ct_images", []):
+            try:
+                self.fs.delete(ObjectId(ref))
+            except Exception:
+                pass
+
+        self.cases.delete_one({"case_id": case_id})
         return True
 
-
+    def clean_cache(self, max_age_seconds: int):
+        """
+        Delete files older than `max_age_seconds` from the cache directory.
+        """
+        now = time.time()
+        for root, dirs, files in os.walk(self.cache_dir):
+            for file in files:
+                file_path = os.path.join(root, file)
+                if os.path.isfile(file_path):
+                    if now - os.path.getatime(file_path) > max_age_seconds:
+                        try:
+                            os.remove(file_path)
+                            print(f"Deleted cached file: {file_path}")
+                        except Exception as e:
+                            print(f"Failed to delete file {file_path}: {e}")

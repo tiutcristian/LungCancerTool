@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import Dict, Any, List
+from logic.image_utils import dicom_to_gray_np
 
 import cv2
 import joblib
@@ -49,7 +50,10 @@ def delete_case(case_id: str) -> bool:
 
 
 def predict_ct_section(img_path, model, scaler, img_size=64, class_names=None):
-    img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+    if img_path.lower().endswith(".dcm"):
+        img = dicom_to_gray_np(img_path)
+    else:
+        img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
     if img is None:
         raise ValueError(f"Could not read image: {img_path}")
 

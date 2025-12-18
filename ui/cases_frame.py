@@ -190,8 +190,8 @@ class CasesFrame(tk.Frame):
         dlg = CaseDialog(self, title="Add Case", default_id=new_id, existing_ids=self._existing_ids())
         self.wait_window(dlg)
         if dlg.result:
-            self.controller.cases.append(dlg.result)
             add_case(dlg.result)
+            self.controller.cases = get_initial_cases()
             self.refresh_table()
 
     def _get_selected_case(self):
@@ -219,6 +219,7 @@ class CasesFrame(tk.Frame):
             case.segmentation_status = dlg.result.segmentation_status
             case.ct_images = dlg.result.ct_images
             update_case(case)
+            self.controller.cases = get_initial_cases()
             self.refresh_table()
 
     def delete_case(self):

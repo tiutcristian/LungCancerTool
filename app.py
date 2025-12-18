@@ -59,4 +59,5 @@ class App(tk.Tk):
 
 if __name__ == "__main__":
     app = App()
+    app._db.clean_cache(max_age_seconds=7 * 24 * 60 * 60)
     app.mainloop()
