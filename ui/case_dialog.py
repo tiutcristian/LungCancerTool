@@ -128,7 +128,8 @@ class CaseDialog(tk.Toplevel):
 
         btns = ttk.Frame(list_row, style="Dialog.TFrame")
         btns.pack(side="left", padx=8, fill="y")
-        ttk.Button(btns, text="Add…", style="Ghost.TButton", command=self._add_folder).pack(fill="x", pady=2)
+        ttk.Button(btns, text="Add Folder…", style="Ghost.TButton", command=self._add_folder).pack(fill="x", pady=2)
+        ttk.Button(btns, text="Add…", style="Ghost.TButton", command=self._add_imgs).pack(fill="x", pady=2)
         ttk.Button(btns, text="Remove", style="Ghost.TButton", command=self._remove_selected).pack(fill="x", pady=2)
 
         # Actions
@@ -220,21 +221,121 @@ class CaseDialog(tk.Toplevel):
         return name
 
     def _add_folder(self):
-        folder = tk.filedialog.askdirectory(
+        """Let the user pick a folder and import all files inside as series images.
+
+        We store individual file paths in `ct_images` (not the folder itself) so MongoDB
+        upload/preview work unchanged.
+        """
+        folder = filedialog.askdirectory(
             parent=self,
-            title="Select CT series folder",
-            initialdir=_default_initialdir()
+            title="Select DICOM folder",
+            initialdir=_default_initialdir(),
         )
         if not folder:
             return
 
-        # verifică dacă există DICOM-uri în folder
-        dicoms = [f for f in os.listdir(folder) if f.lower().endswith(".dcm")]
-        if not dicoms:
-            messagebox.showwarning("No DICOMs", "Selected folder contains no DICOM files.")
+        # Collect candidates (recursive) – keep it simple: accept common DICOM/image extensions,
+        # and also accept extensionless files that pass a fast DICM header check.
+        exts = {".dcm", ".dicom", ".ima", ".png", ".jpg", ".jpeg"}
+        candidates = []
+        for root, _dirs, files in os.walk(folder):
+            for fn in files:
+                p = os.path.join(root, fn)
+                ext = os.path.splitext(fn)[1].lower()
+                if ext in exts:
+                    candidates.append(p)
+                elif ext == "":
+                    # sometimes DICOM files have no extension
+                    try:
+                        with open(p, "rb") as f:
+                            f.seek(128)
+                            if f.read(4) == b"DICM":
+                                candidates.append(p)
+                    except Exception:
+                        pass
+
+        if not candidates:
+            messagebox.showwarning("Import", "No files found in that folder.")
             return
 
-        self.image_paths = folder  # ⚠️ acum e string
-        self.lb.delete(0, "end")
-        self.lb.insert("end", os.path.basename(folder))
-        messagebox.showinfo("Import", f"Added folder with {len(dicoms)} DICOM files.")
+        candidates.sort()
+        added = 0
+        for p in candidates:
+            if p in self.image_paths:
+                continue
+            self.image_paths.append(p)
+            self.lb.insert("end", self._pretty_label(p))
+            added += 1
+
+        messagebox.showinfo("Import", f"Imported {added} file(s) from folder.")
+
+    def _add_imgs(self):
+        paths = filedialog.askopenfilenames(
+            parent=self,
+            title="Select images or DICOM",
+            initialdir=_default_initialdir(),
+            filetypes=[
+                ("Images & DICOM", "*.png;*.jpg;*.jpeg;*.dcm;*.dicom"),
+                ("All files", "*.*"),
+            ]
+        )
+        if not paths:
+            return
+
+        added = 0
+        for p in paths:
+            if not p or p in self.image_paths:
+                continue
+
+            self.image_paths.append(p)  # 🔥 DOAR PATH LOCAL
+            self.lb.insert("end", self._pretty_label(p))
+            added += 1
+
+        if added:
+            self.after(10, lambda: messagebox.showinfo(
+                "Import", f"Added {added} file(s)."
+            ))
+
+    def _collect_files_from_folder(self, folder: str) -> list[str]:
+        """Recursively collect likely DICOM/image files from a folder."""
+        if not folder or not os.path.isdir(folder):
+            return []
+        exts = {".dcm", ".dicom", ".png", ".jpg", ".jpeg"}
+        out: list[str] = []
+        for root, _dirs, files in os.walk(folder):
+            for fn in files:
+                p = os.path.join(root, fn)
+                ext = os.path.splitext(fn)[1].lower()
+                # include common image formats; for DICOM we also accept files with no extension
+                if ext in exts or ext == "":
+                    out.append(p)
+        # stable order for UI
+        out.sort(key=lambda x: (os.path.dirname(x), os.path.basename(x)))
+        return out
+
+    def _add_folder(self):
+        folder = filedialog.askdirectory(
+            parent=self,
+            title="Select DICOM folder (CT series)",
+            initialdir=_default_initialdir(),
+        )
+        if not folder:
+            return
+
+        files = self._collect_files_from_folder(folder)
+        if not files:
+            messagebox.showwarning("Import", "No files found in the selected folder.")
+            return
+
+        added = 0
+        for p in files:
+            if not p or p in self.image_paths:
+                continue
+            self.image_paths.append(p)
+            self.lb.insert("end", self._pretty_label(p))
+            added += 1
+
+        if added:
+            self.after(10, lambda: messagebox.showinfo(
+                "Import", f"Added {added} file(s) from folder."
+            ))
