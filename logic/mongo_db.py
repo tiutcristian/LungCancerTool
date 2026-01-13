@@ -54,116 +54,75 @@ class MongoDB:
     # -------------------------------------------------------------------------
 
     def insert_case(self, case: Case) -> Optional[str]:
-        """
-        Insert a new Case into MongoDB, storing images in GridFS.
-
-        - Local files are uploaded to GridFS
-        - Existing GridFS ObjectId refs are preserved
-        - No dependency on permanent local storage
-        """
-
-        # 1. Prevent duplicate case_id
-        existing = self.cases.find_one({"case_id": case.case_id})
-        if existing:
-            print(f"[MongoDB] Case with id {case.case_id} already exists, skipping insert.")
+        if self.cases.find_one({"case_id": case.case_id}):
+            print(f"[MongoDB] Case with id {case.case_id} already exists.")
             return None
 
-        file_ids: List[str] = []
-
-        # 2. Process images safely
-        for img_ref in case.ct_images:
-            if not img_ref:
-                continue
-
-            # Case A: already a GridFS ObjectId (string)
-            if not os.path.exists(img_ref):
-                file_ids.append(img_ref)
-                continue
-
-            # Case B: local file → upload to GridFS
-            try:
-                with open(img_ref, "rb") as f:
-                    file_id = self.fs.put(
-                        f,
-                        filename=os.path.basename(img_ref)
-                    )
-                file_ids.append(str(file_id))
-            except Exception as e:
-                raise RuntimeError(f"Failed to upload image '{img_ref}' to GridFS: {e}")
-
-        # 3. Insert case document
         doc = {
             "case_id": case.case_id,
             "patient_name": case.patient_name,
             "date": case.date,
             "segmentation_status": case.segmentation_status,
-            "ct_images": file_ids,  # GridFS ObjectId strings
-            "ai_result": {},  # empty at first
+            "ct_series_dir": case.ct_series_dir,
+            "ai_result": {},
         }
 
-        result = self.cases.insert_one(doc)
-        print(f"[MongoDB] Inserted case {case.case_id} with _id={result.inserted_id}")
-
-        return str(result.inserted_id)
+        res = self.cases.insert_one(doc)
+        return str(res.inserted_id)
 
     def update_case(self, case: Case) -> bool:
-        doc = self._find_case_doc(case.case_id)
-        existing_refs = set(doc.get("ct_images", []))
-
-        new_refs = []
-
-        for img in case.ct_images:
-            if os.path.exists(img):
-                with open(img, "rb") as f:
-                    fid = self.fs.put(f, filename=os.path.basename(img))
-                    new_refs.append(str(fid))
-            else:
-                new_refs.append(img)  # deja GridFS
-
-        result = self.cases.update_one(
+        res = self.cases.update_one(
             {"case_id": case.case_id},
             {
                 "$set": {
                     "patient_name": case.patient_name,
                     "date": case.date,
                     "segmentation_status": case.segmentation_status,
-                    "ct_images": new_refs,
+                    "ct_series_dir": case.ct_series_dir,
                 }
             },
         )
-        return result.matched_count > 0
+        return res.matched_count > 0
 
     def list_cases(self) -> List[Case]:
         out = []
         for doc in self.cases.find({}):
-            ct_refs = doc.get("ct_images", []) or []
-
-            resolved = [
-                self._resolve_image_to_local_path(ref, subdir="ct")
-                for ref in ct_refs
-            ]
-
             out.append(
                 Case(
-                    case_id=str(doc.get("case_id")),
+                    case_id=doc.get("case_id"),
                     patient_name=doc.get("patient_name", ""),
                     date=doc.get("date", ""),
                     segmentation_status=doc.get("segmentation_status", ""),
-                    ct_images=resolved,
+                    ct_series_dir=doc.get("ct_series_dir", ""),
                 )
             )
         return out
 
+    def get_case(self, case_id: str) -> Case:
+        doc = self.cases.find_one({"case_id": case_id})
+        if not doc:
+            raise KeyError(f"Case '{case_id}' not found")
+
+        return Case(
+            case_id=doc["case_id"],
+            patient_name=doc.get("patient_name", ""),
+            date=doc.get("date", ""),
+            segmentation_status=doc.get("segmentation_status", ""),
+            ct_series_dir=doc.get("ct_series_dir", ""),
+        )
+
+    def save_ai_result(self, case_id: str, ai_result: Dict[str, Any]) -> bool:
+        res = self.cases.update_one(
+            {"case_id": case_id},
+            {"$set": {"ai_result": ai_result}},
+        )
+        return res.matched_count > 0
+
     def get_ai_result(self, case_id: str) -> Dict[str, Any]:
-        doc = self._find_case_doc(case_id)
-        ai = doc.get("ai_result") or {}
-        biomarkers = ai.get("biomarkers", []) or []
-        explanation = ai.get("explanation", "") or ""
-        heatmap_ref = ai.get("heatmap")
-        heatmap_img = None
-        if heatmap_ref:
-            heatmap_img = self._load_image_as_pil(heatmap_ref).convert("RGBA")
-        return {"biomarkers": biomarkers, "explanation": explanation, "heatmap": heatmap_img}
+        doc = self.cases.find_one({"case_id": case_id})
+        if not doc:
+            raise KeyError(f"Case '{case_id}' not found")
+        return doc.get("ai_result", {})
 
     # -------------------------------------------------------------------------
     # Internal helpers
@@ -234,19 +193,10 @@ class MongoDB:
         grid_out = self.fs.get(oid)
         return grid_out.read()
 
-    def delete_case(self, case_id):
-        doc = self.cases.find_one({"case_id": case_id})
-        if not doc:
-            return False
+    def delete_case(self, case_id: str) -> bool:
+        res = self.cases.delete_one({"case_id": case_id})
+        return res.deleted_count > 0
 
-        for ref in doc.get("ct_images", []):
-            try:
-                self.fs.delete(ObjectId(ref))
-            except Exception:
-                pass
-
-        self.cases.delete_one({"case_id": case_id})
-        return True
 
     def clean_cache(self, max_age_seconds: int):
         """

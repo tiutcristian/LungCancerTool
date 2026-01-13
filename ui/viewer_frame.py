@@ -2,6 +2,8 @@ import os
 import tkinter as tk
 from tkinter import ttk, messagebox
 from PIL import Image, ImageTk, ImageOps
+from pathlib import Path
+from pydicom import dcmread
 
 # your existing mock; works unchanged
 from logic.backend import run_ai
@@ -132,18 +134,53 @@ class ViewerFrame(tk.Frame):
         self._file_first_index.clear()
         self.series_list.delete(0, "end")
 
-        for i, path in enumerate(c.ct_images):  # Use ct_images instead of series_paths
+        dicom_dir = c.ct_series_dir
+
+        if not dicom_dir or not os.path.isdir(dicom_dir):
+            messagebox.showerror(
+                "Invalid CT data",
+                "CT series directory not found or invalid."
+            )
+            return
+
+        dicom_files = []
+        for p in Path(dicom_dir).iterdir():
+            if p.suffix.lower() == ".dcm":
+                try:
+                    ds = dcmread(str(p), stop_before_pixels=True, force=True)
+                    z = float(ds.ImagePositionPatient[2]) if "ImagePositionPatient" in ds else 0.0
+                    dicom_files.append((z, p))
+                except Exception:
+                    pass
+
+        dicom_files.sort(key=lambda x: x[0])
+        dicom_files = [p for _, p in dicom_files]
+
+        if not dicom_files:
+            messagebox.showerror(
+                "Invalid CT data",
+                "No DICOM files found in the selected directory."
+            )
+            return
+
+        first_idx = 0
+        for i, dcm_path in enumerate(dicom_files):
             try:
-                frames = self._load_any_to_frames(path)  # list of PIL RGBA
-                first_idx = len(self._pil_images)
+                frames = self._dicom_to_frames(str(dcm_path))
                 self._pil_images.extend(frames)
-                # label shows frame count for DICOM
-                label = os.path.basename(path)
-                if len(frames) > 1: label += f"  [{len(frames)}]"
-                self.series_list.insert("end", f"{i + 1}. {label}")
-                self._file_first_index.append(first_idx)
             except Exception as e:
-                messagebox.showerror("Image error", f"Could not open:\n{path}\n\n{e}")
+                messagebox.showerror(
+                    "DICOM error",
+                    f"Could not open:\n{dcm_path}\n\n{e}"
+                )
+                return
+
+        # listbox: UN SINGUR ENTRY = o serie
+        self.series_list.insert(
+            "end",
+            f"1. {os.path.basename(dicom_dir)}  [{len(self._pil_images)} slices]"
+        )
+        self._file_first_index.append(0)
 
         if self._pil_images:
             self.series_list.selection_clear(0, "end");
@@ -168,19 +205,7 @@ class ViewerFrame(tk.Frame):
         except Exception:
             return False
 
-    def _load_any_to_frames(self, path):
-        """Return list[PIL.Image (RGBA)] for a PNG/JPG or DICOM file."""
-        ext = os.path.splitext(path)[1].lower()
-        if ext in (".png", ".jpg", ".jpeg"):
-            from PIL import Image
-            img = Image.open(path).convert("RGBA")
-            return [img]
-        if self._is_dicom(path):
-            return self._dicom_to_frames(path)
-        # unknown → let PIL try
-        from PIL import Image
-        img = Image.open(path).convert("RGBA")
-        return [img]
+
 
     def _dicom_to_frames(self, path):
         """Decode DICOM (supports multi-frame, VOI/MOD LUT, MONOCHROME1) -> list of PIL RGBA."""

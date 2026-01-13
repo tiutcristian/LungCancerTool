@@ -128,7 +128,7 @@ class CaseDialog(tk.Toplevel):
 
         btns = ttk.Frame(list_row, style="Dialog.TFrame")
         btns.pack(side="left", padx=8, fill="y")
-        ttk.Button(btns, text="Add…", style="Ghost.TButton", command=self._add_imgs).pack(fill="x", pady=2)
+        ttk.Button(btns, text="Add…", style="Ghost.TButton", command=self._add_folder).pack(fill="x", pady=2)
         ttk.Button(btns, text="Remove", style="Ghost.TButton", command=self._remove_selected).pack(fill="x", pady=2)
 
         # Actions
@@ -219,29 +219,22 @@ class CaseDialog(tk.Toplevel):
             return f"{name}  [DICOM]"
         return name
 
-    def _add_imgs(self):
-        paths = filedialog.askopenfilenames(
+    def _add_folder(self):
+        folder = tk.filedialog.askdirectory(
             parent=self,
-            title="Select images or DICOM",
-            initialdir=_default_initialdir(),
-            filetypes=[
-                ("Images & DICOM", "*.png;*.jpg;*.jpeg;*.dcm;*.dicom"),
-                ("All files", "*.*"),
-            ]
+            title="Select CT series folder",
+            initialdir=_default_initialdir()
         )
-        if not paths:
+        if not folder:
             return
 
-        added = 0
-        for p in paths:
-            if not p or p in self.image_paths:
-                continue
+        # verifică dacă există DICOM-uri în folder
+        dicoms = [f for f in os.listdir(folder) if f.lower().endswith(".dcm")]
+        if not dicoms:
+            messagebox.showwarning("No DICOMs", "Selected folder contains no DICOM files.")
+            return
 
-            self.image_paths.append(p)  # 🔥 DOAR PATH LOCAL
-            self.lb.insert("end", self._pretty_label(p))
-            added += 1
-
-        if added:
-            self.after(10, lambda: messagebox.showinfo(
-                "Import", f"Added {added} file(s)."
-            ))
+        self.image_paths = folder  # ⚠️ acum e string
+        self.lb.delete(0, "end")
+        self.lb.insert("end", os.path.basename(folder))
+        messagebox.showinfo("Import", f"Added folder with {len(dicoms)} DICOM files.")

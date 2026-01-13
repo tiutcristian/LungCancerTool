@@ -107,10 +107,18 @@ class LungCancerPipeline:
         return np.array(feature_values).reshape(1, -1)
 
     def predict(self, ct_path, radiomics_features):
+        # 1️⃣ Scale radiomics features
         radio_scaled = self.scaler.transform(radiomics_features)
+
+        # 2️⃣ Load 3D NIfTI volume
         img = nib.load(ct_path)
         vol_3d = img.get_fdata().astype(np.float32)
-        vol_3d = np.expand_dims(vol_3d, -1) if len(vol_3d.shape) == 3 else vol_3d
+
+        # Ensure channel dimension
+        if len(vol_3d.shape) == 3:
+            vol_3d = np.expand_dims(vol_3d, -1)  # (H, W, D, 1)
+
+        # 3️⃣ Create valid 2D slices
         slices = [
             tf.image.resize(vol_3d[:, :, z, :], TARGET_SHAPE_2D).numpy()
             for z in range(vol_3d.shape[2])
@@ -118,15 +126,38 @@ class LungCancerPipeline:
         ]
         if not slices:
             return None
-        slices_array = np.array(slices)
+
+        slices_array = np.array(slices)  # (num_slices, H, W, C)
         radio_array = np.repeat(radio_scaled, len(slices), axis=0)
+
+        # 4️⃣ Predict with the model
         preds = self.model.predict([slices_array, radio_array], verbose=0)
-        if isinstance(preds, list):
-            ttf1_vals, ck7_vals = preds[0], preds[1]
+
+        # 5️⃣ Normalize output as 2D array (num_slices x 2)
+        if isinstance(preds, list) and len(preds) == 2:
+            # model returns list of two arrays → stack into 2D
+            preds = np.column_stack(preds)
         else:
-            ttf1_vals, ck7_vals = preds[:, 0], preds[:, 1]
+            preds = np.array(preds)
+            if preds.ndim == 0:
+                # scalar output → make 2D with 1 slice and 1 biomarker duplicated
+                preds = np.array([[preds, preds]])
+            elif preds.ndim == 1:
+                if len(preds) == 2:
+                    preds = preds.reshape(1, 2)
+                else:
+                    preds = np.column_stack([preds, preds])
+
+        # 6️⃣ Extract TTF1 and CK7 values safely
+        if preds.shape[1] < 2:
+            # If model returned only 1 column, duplicate for second biomarker
+            preds = np.column_stack([preds[:, 0], preds[:, 0]])
+
+        ttf1_vals, ck7_vals = preds[:, 0], preds[:, 1]
         ttf1_score = float(np.mean(ttf1_vals))
         ck7_score = float(np.mean(ck7_vals))
+
+        # 7️⃣ Return dict
         return {
             "Raw_TTF1": ttf1_score,
             "Raw_CK7": ck7_score,
@@ -142,30 +173,33 @@ def get_initial_cases() -> List[Case]:
 
 
 def run_ai(case: Case) -> Dict[str, Any]:
-    """
-    Rulează întreg pipeline-ul AI (DICOM -> Mask -> Radiomics -> Predict)
-    folosind modelul 2D EfficientNet + radiomics scaler.
-    """
-    base_dir = Path(__file__).resolve().parent
+    base_dir = Path(__file__).resolve().parent.parent
+
     model_path = base_dir / "ai_model" / "model" / "model_2d_efficientnet_v3_FIXED_LR.keras"
     scaler_path = base_dir / "ai_model" / "model" / "radiomics_scaler.joblib"
+
     temp_dir = base_dir / "ai_model" / "temp"
     temp_dir.mkdir(exist_ok=True)
 
     pipeline = LungCancerPipeline(model_path, scaler_path)
 
-    # 1️⃣ Convert DICOM to NIfTI
+    # 1️⃣ DICOM → NIfTI (SERIE COMPLETĂ)
     nifti_path = temp_dir / "patient_ct.nii.gz"
-    pipeline.convert_dicom_to_nifti(Path(case.ct_folder), nifti_path)
+    pipeline.convert_dicom_to_nifti(
+        Path(case.ct_series_dir),
+        nifti_path
+    )
 
-    # 2️⃣ Generate Mask
+    # 2️⃣ Lung mask
     mask_path = temp_dir / "patient_mask.nii.gz"
     pipeline.generate_lung_mask(nifti_path, mask_path)
 
     # 3️⃣ Preprocess
-    prep_ct, prep_mask = pipeline.preprocess_images(nifti_path, mask_path, temp_dir)
+    prep_ct, prep_mask = pipeline.preprocess_images(
+        nifti_path, mask_path, temp_dir
+    )
 
-    # 4️⃣ Radiomics + Prediction
+    # 4️⃣ Radiomics + Predict
     feats = pipeline.extract_radiomics(prep_ct, prep_mask)
     result = pipeline.predict(prep_ct, feats)
 
@@ -181,6 +215,7 @@ def run_ai(case: Case) -> Dict[str, Any]:
         ),
         "heatmap": None,
     }
+
 
 
 def add_case(case: Case) -> str:
